@@ -33,9 +33,9 @@ AUDIO_ALIASES = (AUDIO_ENV, "AUDIO_KEY", "LATENT_TTS_KEY")
 IMAGE_ALIASES = (IMAGE_ENV, "IMAGE_KEY", "LATENT_SK_KEY")
 COOKIE_ALIASES = ("LATENT_COOKIE", "LATENT_AUDIO_COOKIE")
 KEY_FILES = [SKILL_ROOT / "keys.env", Path.home() / ".config" / "latent" / "keys.env"]
-VOICE_CACHE = SKILL_ROOT / "voices.json"
+USER_CONFIG_DIR = Path.home() / ".config" / "latent"
 VOICE_PAGE_SIZE = 24
-USER_AGENT = "latent-media-skill/1.0 (+https://github.com/)"
+USER_AGENT = "latent-media-skill/1.2"
 FMT_EXT = {"mp3": ".mp3", "wav": ".wav", "opus": ".opus"}
 MEDIA_EXT = {"image/webp": ".webp", "image/png": ".png", "image/jpeg": ".jpg", "audio/mpeg": ".mp3",
              "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/ogg": ".opus", "audio/opus": ".opus"}
@@ -72,6 +72,25 @@ def mask(key: str | None) -> str:
     if not key:
         return "(未配置)"
     return f"{key[:8]}…{key[-4:]}" if len(key) > 16 else "***"
+
+
+def writable_dir(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".probe"
+        probe.write_bytes(b"")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def state_file(name: str) -> Path:
+    """写入位置：优先 skill 目录，只读安装时退回 ~/.config/latent，再不行用 cwd。"""
+    for folder in (SKILL_ROOT, USER_CONFIG_DIR, Path.cwd()):
+        if writable_dir(folder):
+            return folder / name
+    die(f"没有可写目录，无法保存 {name}")
 
 
 def read_env_file(path: Path) -> dict:
@@ -284,7 +303,7 @@ def do_tts_one(args, key: str, text: str, idem: str) -> tuple[bytes, dict]:
             say(f"{code or status}，{wait:.0f}s 后重试（{attempt}/{args.retries}）")
             time.sleep(wait)
             continue
-        hint = {"voice_not_found": "语音 slug 不对或未发布：slug 取自语音库页面（audio.latent.moe/studio），也可传条目 UUID",
+        hint = {"voice_not_found": "语音 slug 不对或未发布：用 latent.py voices -q 关键词 查已发布音色（也可传条目 UUID）",
                 "quota_exhausted": "本周语音额度已用完（14400 秒/周）",
                 "concurrent_limit": "已有请求在跑（同账号 4 并发），稍后再试",
                 "input_too_long": "文本过长（>300 秒估算），请切段",
@@ -374,20 +393,21 @@ def fetch_voice_library(cookie: str) -> list[dict]:
 
 
 def cmd_voices(args) -> None:
+    cache_file = state_file("voices.json")
     cache = {}
-    if VOICE_CACHE.is_file():
+    if cache_file.is_file():
         try:
-            cache = json.loads(VOICE_CACHE.read_text(encoding="utf-8"))
+            cache = json.loads(cache_file.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             cache = {}
     items = cache.get("voices") or []
     if args.refresh or not items:
         say("抓取音色库…")
         items = fetch_voice_library(get_cookie(args.cookie))
-        VOICE_CACHE.write_text(json.dumps(
+        cache_file.write_text(json.dumps(
             {"fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "count": len(items), "voices": items},
             ensure_ascii=False, indent=2), encoding="utf-8")
-        say(f"已缓存 {len(items)} 个音色 → {VOICE_CACHE}")
+        say(f"已缓存 {len(items)} 个音色 → {cache_file}")
 
     query = (args.query or "").lower()
     selected = []
@@ -580,7 +600,7 @@ def cmd_doctor(args) -> None:
 
 
 def cmd_keys(args) -> None:
-    path = KEY_FILES[0]
+    path = state_file("keys.env")
     table = read_env_file(path)
     if args.audio:
         table[AUDIO_ENV] = args.audio.strip()
