@@ -1,0 +1,17 @@
+# 密钥：任何真实 key 都不进仓库
+keys.env
+.env
+*.key
+!keys.env.example
+
+# 生成出来的音频/图片
+out/
+*.mp3
+*.wav
+*.opus
+*.webp
+
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
