@@ -4,6 +4,9 @@ keys.env
 *.key
 !keys.env.example
 
+# 音色库缓存（随时可 --refresh 重抓）
+voices.json
+
 # 生成出来的音频/图片
 out/
 *.mp3

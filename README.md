@@ -16,18 +16,23 @@ python scripts/latent.py keys --audio lat_tk_xxx --image lat_sk_xxx
 # 2. 自检
 python scripts/latent.py doctor
 
-# 3. 出声
-python scripts/latent.py tts --voice <slug> --text "灯笼已经点上了，她才走到桥边。" -o line.mp3
+# 3. 挑一个音色（第一次要站点 cookie，之后读本地缓存）
+python scripts/latent.py voices -q 台湾
 
-# 4. 出图
+# 4. 出声
+python scripts/latent.py tts --voice voice-158 --text "灯笼已经点上了，她才走到桥边。" -o line.mp3
+
+# 5. 出图
 python scripts/latent.py image --prompt "1girl, solo, watercolor pencil (medium)" -o pic.png
 ```
 
 key 也可以走环境变量 `LATENT_AUDIO_KEY` / `LATENT_IMAGE_KEY`，或用 `--key` 单次传入。
+`voices` 需要登录 cookie（`LATENT_COOKIE`），**合成与出图不需要**——cookie 只用来读音色库列表。
 
 ## 命令
 
 ```
+voices   [-q 关键词] [--lang zh] [--sex Female] [--limit N] [--refresh] [--json]
 tts      --voice <slug> (--text T ... | --text-file F [--split-lines]) [-o OUT] [--format mp3|wav|opus]
 image    --prompt P [--negative N] [--resolution square|portrait|landscape] [--steps 8-12] [--seed N] [-o OUT] [--no-wait]
 job      <id> [--download OUT]         # 查任务 / 取图
@@ -43,7 +48,7 @@ doctor | keys
 
 都在 [`SKILL.md`](./SKILL.md) 里，包括：
 
-- 语音 slug 只能从语音库拿，**API 没有 voices 列表接口**，且未发布的语音一律 `404`；
+- 音色库是站点首页，条目地址 `/v/<slug>`，slug 就是 `--voice` 的值；**API 没有 voices 列表接口**，列表只能靠登录态解析首页，脚本会缓存成 `voices.json`；
 - 气声事件全表、配额（14400 秒/周、4 并发、单次 300 秒）与图像限制（1 任务、8–12 步、三档尺寸）；
 - 幂等键的意义：重试复用同一个 `Idempotency-Key` 才不会重复扣额度；
 - 语音 `504` 时改走 `/api/jobs/{id}/audio` 领取；

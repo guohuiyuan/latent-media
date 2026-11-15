@@ -6,9 +6,10 @@
 
   python scripts/latent.py tts   --voice <slug> --text "台词" -o line.mp3
   python scripts/latent.py image --prompt "1girl, watercolor" -o pic.webp
-  python scripts/latent.py status | resolve | job | doctor | keys
+  python scripts/latent.py voices | status | resolve | job | doctor | keys
 
 密钥来源优先级：--key / 环境变量 / keys.env（skill 根目录）/ ~/.config/latent/keys.env
+列音色库需要站点登录 cookie（LATENT_COOKIE），合成与出图只需要 key。
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import argparse
 import json
 import mimetypes
 import os
+import re
 import sys
 import time
 import uuid
@@ -29,7 +31,10 @@ IMAGE_BASE = "https://latent.moe"
 AUDIO_ENV, IMAGE_ENV = "LATENT_AUDIO_KEY", "LATENT_IMAGE_KEY"
 AUDIO_ALIASES = (AUDIO_ENV, "AUDIO_KEY", "LATENT_TTS_KEY")
 IMAGE_ALIASES = (IMAGE_ENV, "IMAGE_KEY", "LATENT_SK_KEY")
+COOKIE_ALIASES = ("LATENT_COOKIE", "LATENT_AUDIO_COOKIE")
 KEY_FILES = [SKILL_ROOT / "keys.env", Path.home() / ".config" / "latent" / "keys.env"]
+VOICE_CACHE = SKILL_ROOT / "voices.json"
+VOICE_PAGE_SIZE = 24
 USER_AGENT = "latent-media-skill/1.0 (+https://github.com/)"
 FMT_EXT = {"mp3": ".mp3", "wav": ".wav", "opus": ".opus"}
 MEDIA_EXT = {"image/webp": ".webp", "image/png": ".png", "image/jpeg": ".jpg", "audio/mpeg": ".mp3",
@@ -82,8 +87,7 @@ def read_env_file(path: Path) -> dict:
     return data
 
 
-def get_key(kind: str, cli_value: str | None = None) -> str:
-    aliases = AUDIO_ALIASES if kind == "audio" else IMAGE_ALIASES
+def lookup(aliases: tuple, cli_value: str | None, label: str, hint: str) -> str:
     if cli_value:
         return cli_value.strip()
     for name in aliases:
@@ -94,9 +98,21 @@ def get_key(kind: str, cli_value: str | None = None) -> str:
         table = read_env_file(path)
         for name in aliases:
             if table.get(name):
-                return table[name]
-    die(f"缺少 {'语音' if kind == 'audio' else '图像'} API key：设置环境变量 {aliases[0]}，"
-        f"或写入 {KEY_FILES[0]}（见 .env.example）")
+                return table[name].strip()
+    die(f"缺少 {label}：{hint}")
+
+
+def get_key(kind: str, cli_value: str | None = None) -> str:
+    if kind == "audio":
+        return lookup(AUDIO_ALIASES, cli_value, "语音 API key",
+                      f"设置环境变量 {AUDIO_ENV}，或写入 {KEY_FILES[0]}（见 keys.env.example）")
+    return lookup(IMAGE_ALIASES, cli_value, "图像 API key",
+                  f"设置环境变量 {IMAGE_ENV}，或写入 {KEY_FILES[0]}（见 keys.env.example）")
+
+
+def get_cookie(cli_value: str | None = None) -> str:
+    return lookup(COOKIE_ALIASES, cli_value, "站点 cookie（只有列音色库用得上）",
+                  f"设置环境变量 {COOKIE_ALIASES[0]}，或 python scripts/latent.py keys --cookie '...'")
 
 
 def _open(req: request.Request, timeout: float):
@@ -279,12 +295,12 @@ def do_tts_one(args, key: str, text: str, idem: str) -> tuple[bytes, dict]:
 def cmd_tts(args) -> None:
     key = get_key("audio", args.key)
     texts = collect_texts(args)
+    stem = args.name or f"tts-{args.voice}-{time.strftime('%H%M%S')}"
     results = []
     for i, text in enumerate(texts, start=1):
         idem = args.idem or str(uuid.uuid4())
         raw, headers = do_tts_one(args, key, text, idem)
         ext = FMT_EXT.get(args.format, ".mp3")
-        stem = args.name or f"tts-{args.voice}-{time.strftime('%H%M%S')}"
         path = save(raw, resolve_out(args.out, stem, ext, i, len(texts)))
         item = {"file": str(path), "bytes": len(raw), "voice": args.voice,
                 "duration_ms": int(hget(headers, "X-Audio-Duration-Ms") or 0) or None,
@@ -296,6 +312,113 @@ def cmd_tts(args) -> None:
             print(f"{path}  {len(raw)/1024:.0f} KB  {secs:.1f}s  voice={args.voice}")
     if args.json:
         emit(results[0] if len(results) == 1 else results)
+
+
+# ---------------------------------------------------------------- 音色库
+
+CARD_RE = re.compile(r'<a title="(?P<name>[^"]*)"[^>]*?href="/v/(?P<slug>[^"]+)"')
+KINDS = ("Fictional character", "Synthetic", "Own voice")
+
+
+def parse_voice_cards(html: str) -> list[dict]:
+    html = html.replace("<!-- -->", "")
+    marks = [(m.start(), m) for m in CARD_RE.finditer(html)]
+    cards = []
+    for idx, (start, m) in enumerate(marks):
+        end = marks[idx + 1][0] if idx + 1 < len(marks) else start + 4000
+        block, before = html[m.end():end], html[max(0, start - 2500):start]
+        meta = re.search(r'text-meta text-muted">(.*?)</p>', block, re.S)
+        desc = re.search(r'line-clamp-2[^"]*">(.*?)</p>', block, re.S)
+        uses = re.search(r">(\d+)\s*uses?</span>", block)
+        gen = re.search(r">([^<]{1,20}?)\s*generated</span>", block)
+        uid = re.search(r"/api/voices/([0-9a-f-]{36})/", block)
+        parts = [p.strip() for p in re.sub(r"<[^>]+>", "", meta.group(1)).split("·")] if meta else []
+        tail = before[-600:]
+        kind = next((k for k in KINDS if k in tail), None)
+        cards.append({
+            "slug": m.group("slug"), "name": re.sub(r"<[^>]+>", "", m.group("name")).strip(),
+            "owner": parts[0] if len(parts) > 0 else None,
+            "lang": parts[1] if len(parts) > 1 else None,
+            "sex": parts[2] if len(parts) > 2 else None,
+            "kind": kind,
+            "desc": re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", desc.group(1))).strip() if desc else None,
+            "uses": int(uses.group(1)) if uses else 0,
+            "generated": re.sub(r"\s+", " ", gen.group(1)).strip() if gen else None,
+            "uuid": uid.group(1) if uid else None,
+        })
+    return cards
+
+
+def fetch_voice_library(cookie: str) -> list[dict]:
+    seen, items = set(), []
+    for page in range(1, 21):
+        url = f"{AUDIO_BASE}/" + (f"?page={page}" if page > 1 else "")
+        status, _, raw = call("GET", url, None, timeout=60, headers={"Cookie": cookie})
+        html = raw.decode("utf-8", "replace")
+        if status != 200:
+            die(f"读取音色库失败：HTTP {status}")
+        cards = parse_voice_cards(html)
+        if not cards:
+            if "Sign in" in html[:6000] or "使用 Discord 登录" in html:
+                die("cookie 失效：音色库要 Discord 登录态（浏览器里重新复制一次 cookie）")
+            break
+        fresh = [c for c in cards if c["slug"] not in seen]
+        if not fresh:
+            break
+        for c in fresh:
+            seen.add(c["slug"])
+            items.append(c)
+        if len(cards) < VOICE_PAGE_SIZE:
+            break
+    return items
+
+
+def cmd_voices(args) -> None:
+    cache = {}
+    if VOICE_CACHE.is_file():
+        try:
+            cache = json.loads(VOICE_CACHE.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            cache = {}
+    items = cache.get("voices") or []
+    if args.refresh or not items:
+        say("抓取音色库…")
+        items = fetch_voice_library(get_cookie(args.cookie))
+        VOICE_CACHE.write_text(json.dumps(
+            {"fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "count": len(items), "voices": items},
+            ensure_ascii=False, indent=2), encoding="utf-8")
+        say(f"已缓存 {len(items)} 个音色 → {VOICE_CACHE}")
+
+    query = (args.query or "").lower()
+    selected = []
+    for v in items:
+        if args.lang and (v.get("lang") or "").lower() != args.lang.lower():
+            continue
+        if args.sex and (v.get("sex") or "").lower() != args.sex.lower():
+            continue
+        if query:
+            blob = " ".join(str(v.get(k) or "") for k in ("slug", "name", "owner", "desc")).lower()
+            if query not in blob:
+                continue
+        selected.append(v)
+
+    if args.json:
+        emit({"total_cached": len(items), "matched": len(selected),
+              "cached_at": cache.get("fetched_at"), "voices": selected[:args.limit or None]})
+        return
+    if not selected:
+        print("没有匹配的音色，试试 --refresh 或放宽条件")
+        return
+    limit = args.limit or 30
+    print(f"{'slug':<18} {'lang':<5} {'sex':<7} {'uses':>5}  name｜说明")
+    for v in selected[:limit]:
+        name = v.get("name") or ""
+        desc = (v.get("desc") or "").replace("\n", " ")[:44]
+        print(f"{v['slug']:<18} {(v.get('lang') or '-'):<5} {(v.get('sex') or '-'):<7} "
+              f"{v.get('uses') or 0:>5}  {name}｜{desc}")
+    if len(selected) > limit:
+        print(f"… 还有 {len(selected) - limit} 个，用 --limit 或 --json 取全量")
+    print(f"共缓存 {len(items)} 个音色（{cache.get('fetched_at') or '刚刷新'}）；--refresh 重新抓")
 
 
 # ---------------------------------------------------------------- 图像
@@ -463,10 +586,12 @@ def cmd_keys(args) -> None:
         table[AUDIO_ENV] = args.audio.strip()
     if args.image:
         table[IMAGE_ENV] = args.image.strip()
-    if args.audio or args.image:
+    if args.cookie:
+        table[COOKIE_ALIASES[0]] = args.cookie.strip()
+    if args.audio or args.image or args.cookie:
         path.parent.mkdir(parents=True, exist_ok=True)
-        lines = ["# Latent API keys —— 不要提交到 git（.gitignore 已忽略本文件）"]
-        for name in (AUDIO_ENV, IMAGE_ENV):
+        lines = ["# Latent 凭证 —— 不要提交到 git（.gitignore 已忽略本文件）"]
+        for name in (AUDIO_ENV, IMAGE_ENV, COOKIE_ALIASES[0]):
             if table.get(name):
                 lines.append(f"{name}={table[name]}")
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -475,7 +600,8 @@ def cmd_keys(args) -> None:
         except OSError:
             pass
         say(f"已写入 {path}")
-    emit({"file": str(path), "audio": mask(table.get(AUDIO_ENV)), "image": mask(table.get(IMAGE_ENV))})
+    emit({"file": str(path), "audio": mask(table.get(AUDIO_ENV)), "image": mask(table.get(IMAGE_ENV)),
+          "cookie": "已配置" if table.get(COOKIE_ALIASES[0]) else "(未配置)"})
 
 
 # ---------------------------------------------------------------- CLI
@@ -499,6 +625,16 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--key", help="临时指定语音 key（默认读环境变量/keys.env）")
     t.add_argument("--json", action="store_true", help="输出 JSON")
     t.set_defaults(func=cmd_tts)
+
+    v = sub.add_parser("voices", help="列音色库（首次需要站点 cookie，之后读本地缓存）")
+    v.add_argument("--refresh", action="store_true", help="重新从站点抓取并刷新缓存")
+    v.add_argument("-q", "--query", help="按 slug/名字/作者/描述模糊搜")
+    v.add_argument("--lang", help="zh | ja | en …")
+    v.add_argument("--sex", help="Male | Female | Other")
+    v.add_argument("--limit", type=int, help="最多显示多少条（默认 30）")
+    v.add_argument("--cookie", help="站点登录 cookie（默认读 LATENT_COOKIE / keys.env）")
+    v.add_argument("--json", action="store_true", help="输出 JSON")
+    v.set_defaults(func=cmd_voices)
 
     i = sub.add_parser("image", help="文生图（latent.moe，异步排队）")
     i.add_argument("--prompt", required=True, help="正向提示词，Danbooru 风格 tag 用逗号分隔")
@@ -550,6 +686,7 @@ def build_parser() -> argparse.ArgumentParser:
     k = sub.add_parser("keys", help="查看/写入 keys.env")
     k.add_argument("--audio", help="写入语音 key")
     k.add_argument("--image", help="写入图像 key")
+    k.add_argument("--cookie", help="写入站点登录 cookie（仅列音色库用）")
     k.set_defaults(func=cmd_keys, json=True)
     return p
 
