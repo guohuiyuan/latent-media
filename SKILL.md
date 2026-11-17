@@ -3,7 +3,8 @@ name: latent-media
 description: "调用 Latent 两个云端 API 出声与出图：audio.latent.moe 做文本转语音（音色库 165 个社区音色，按 slug 指定，台词内可嵌 [轻笑] [叹气] [耳语] 等气声事件），latent.moe 做文生图（异步排队，方形/竖版/横版三档）。当用户要求「用某个声音念这段」「给这句台词配音」「换个音色」「生成一张插画/配图」「按 tag 找张参考图」时使用。音色列表需站点 cookie，合成与出图只需 API key。"
 display_name: "Latent 配音·出图"
 agent_created: true
-version: 1.2.0
+version: 1.2.1
+license: AGPL-3.0
 tags: [tts, 语音合成, 配音, 音色库, text-to-speech, 文生图, image-generation, latent, audio.latent.moe, latent.moe]
 ---
 

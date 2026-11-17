@@ -9,6 +9,8 @@
 
 完整用法见 [`SKILL.md`](./SKILL.md)（agent 读这份）。
 
+协议 **AGPL-3.0**（见 [`LICENSE`](./LICENSE)）。
+
 ## 快速开始
 
 ```bash
@@ -35,6 +37,12 @@ cp -r latent-media <project>/.workbuddy/skills/    # 或项目级
 真实 key 与 cookie 只存在于 `keys.env`、环境变量或 `--key`，均被 `.gitignore` 拦截。
 提交前自查：`git grep -nE "lat_(tk|sk)_[A-Za-z0-9_-]{10,}"` 应无输出。
 
+## 协议
+
+**AGPL-3.0**，见 [LICENSE](./LICENSE)。
+
+这意味着：你可以自由使用、修改、再分发；但如果把它（或修改版）作为网络服务提供给别人用，必须同样以 AGPL-3.0 公开源码。
+
 ## 声明
 
-第三方封装，与 Latent 官方无隶属关系。额度、条款与内容政策以站点为准（语音模型权重为 CC-BY-NC，商用需另行确认）。
+第三方封装，与 Latent 官方无隶属关系，仓库里的 AGPL-3.0 只覆盖本项目的代码。额度、条款与内容政策以站点为准；**生成内容的授权不随代码协议走**——语音模型权重为 CC-BY-NC，商用需另行确认。

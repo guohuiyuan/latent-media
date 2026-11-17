@@ -18,3 +18,6 @@ __pycache__/
 *.pyc
 .DS_Store
 Thumbs.db
+
+# 由 voices.json 生成的清单
+voices.md
